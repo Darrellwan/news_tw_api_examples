@@ -1,7 +1,6 @@
 const API_KEY = 'YOUR_API_KEY';
-const SPREADSHEET_ID = 'Spread Sheet ID';
-
 const BASE_API_URL = 'https://newsdata.io/api/1/news';
+const SPREADSHEET_ID = '1qeHLgof44CADejL0GmLYt5WXMlpJgW4l7NukXBjYTyc';
 const NEWS_SHEET_NAME = 'Taiwan News';
 const ERROR_SHEET_NAME = 'Error Log';
 const NEWS_LOG_SHEET_NAME = 'News Raw Data';

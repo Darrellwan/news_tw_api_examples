@@ -1,165 +1,117 @@
-# 台灣新聞自動抓取工具
+// 請替換成你的 NewsData.io API Key
+const API_KEY = 'YOUR_API_KEY';
+// 請替換成你的 Google Spreadsheet ID
+const SPREADSHEET_ID = 'Spread Sheet ID';
 
-這個 Google Apps Script 工具可以自動從 newsdata.io 抓取台灣新聞，並將結果存儲到 Google 試算表中。
+// NewsData.io API 端點
+const BASE_API_URL = 'https://newsdata.io/api/1/news';
+// 新聞資料的工作表名稱
+const NEWS_SHEET_NAME = 'Taiwan News';
+// 錯誤記錄的工作表名稱
+const ERROR_SHEET_NAME = 'Error Log';
+// 原始 API 回應資料的工作表名稱
+const NEWS_LOG_SHEET_NAME = 'News Raw Data';
+// 每次 API 請求的新聞數量
+const NEWS_PER_REQUEST = 10;
+// 開發模式開關
+const DEV_MODE = true;
+// 總請求次數：開發模式 2 次，正式模式 10 次
+const TARGET_REQUESTS = DEV_MODE ? 2 : 10;
+// API 請求間隔時間（毫秒）
+const DELAY_BETWEEN_REQUESTS = 1200;
 
-## 使用前準備
+function convertToTaipeiTime(utcDateString) {
+  const date = new Date(utcDateString);
+  return new Date(date.getTime() + (8 * 60 * 60 * 1000)).toLocaleString('zh-TW', {
+    timeZone: 'Asia/Taipei',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false
+  });
+}
 
-1. 註冊 newsdata.io 帳號
-   - 前往 [newsdata.io](https://newsdata.io/) 註冊帳號
-   - 取得 API 金鑰（API Key）
+function fetchTaiwanNews() {
+  try {
+    const newsSheet = SpreadsheetApp.openById(SPREADSHEET_ID).getSheetByName(NEWS_SHEET_NAME) || 
+                      SpreadsheetApp.openById(SPREADSHEET_ID).insertSheet(NEWS_SHEET_NAME);
+    
+    const logSheet = SpreadsheetApp.openById(SPREADSHEET_ID).getSheetByName(NEWS_LOG_SHEET_NAME) || 
+                    SpreadsheetApp.openById(SPREADSHEET_ID).insertSheet(NEWS_LOG_SHEET_NAME);
+    
+    if (newsSheet.getLastRow() === 0) {
+      const headers = ['Article ID', 'Title', 'Description', 'Source', 'Published Date (TPE)', 'Link'];
+      newsSheet.appendRow(headers);
+    }
+    
+    const lastRow = newsSheet.getLastRow();
+    const existingArticleIds = lastRow > 1 
+      ? new Set(newsSheet.getRange(2, 1, lastRow - 1, 1).getValues().flat())
+      : new Set();
 
-2. 建立 Google 試算表
-   - 開啟 Google 雲端硬碟
-   - 建立新的試算表
-   - 複製試算表的 ID（從網址中 /spreadsheets/d/ 後面的一串字符）
+    logSheet.clear();
+    logSheet.appendRow(['Timestamp', 'Request Count', 'Raw JSON Data']);
 
-3. 設定 Google Apps Script
-   - 在試算表中點選「擴充功能」>「Apps Script」
-   - 建立新的檔案，命名為 `news-newsdata_io.gs`
-   - 將程式碼複製貼上
+    let allNews = [];
+    let nextPage = null;
+    let requestCount = 0;
 
-## 設定說明
+    while (requestCount < TARGET_REQUESTS) {
+      const apiUrl = `${BASE_API_URL}?apikey=${API_KEY}&country=tw&language=zh&size=${NEWS_PER_REQUEST}${nextPage ? `&page=${nextPage}` : ''}`;
+      const response = UrlFetchApp.fetch(apiUrl);
+      const newsData = JSON.parse(response.getContentText());
 
-需要修改的常數：
+      if (newsData.status !== 'success') {
+        throw new Error('Failed to fetch news data');
+      }
 
-    const API_KEY = 'YOUR_API_KEY';        // 替換成你的 newsdata.io API 金鑰
-    const SPREADSHEET_ID = 'YOUR_SHEET_ID'; // 替換成你的試算表 ID
+      logSheet.appendRow([
+        new Date().toLocaleString('zh-TW', {timeZone: 'Asia/Taipei'}),
+        requestCount + 1,
+        JSON.stringify(newsData)
+      ]);
 
-其他可選設定：
+      const newArticles = newsData.results.filter(news => !existingArticleIds.has(news.article_id));
+      allNews = allNews.concat(newArticles);
+      
+      requestCount++;
 
-    const DEV_MODE = true;  // 開發模式：true 只抓取 20 篇新聞，false 抓取 100 篇
+      Logger.log(`Completed request ${requestCount} of ${TARGET_REQUESTS}, got ${newArticles.length} new articles`);
 
-## 執行方式
+      if (!newsData.nextPage) {
+        Logger.log('No more news available');
+        break;
+      }
 
-1. 完成設定後，點選編輯器上方的「執行」按鈕
-2. 第一次執行時會要求授權，請允許存取
-3. 等待程式執行完成
+      nextPage = newsData.nextPage;
 
-## 執行結果
+      if (requestCount < TARGET_REQUESTS) {
+        Utilities.sleep(DELAY_BETWEEN_REQUESTS);
+      }
+    }
 
-程式會在你的試算表中建立三個工作表：
-1. `Taiwan News`：存放新聞資料
-   - Article ID：新聞唯一識別碼
-   - Title：新聞標題
-   - Description：新聞描述
-   - Source：新聞來源
-   - Published Date (TPE)：發布時間（台北時間）
-   - Link：新聞連結
+    allNews.reverse().forEach(news => {
+      const row = [
+        news.article_id,
+        news.title,
+        news.description,
+        news.source_id,
+        convertToTaipeiTime(news.pubDate),
+        news.link
+      ];
+      newsSheet.insertRowAfter(1).getRange(2, 1, 1, row.length).setValues([row]);
+    });
 
-2. `News Raw Data`：存放 API 回應的原始資料
-   - 用於除錯和確認資料正確性
+    Logger.log(`Successfully fetched and inserted ${allNews.length} new Taiwan news articles in ${requestCount} requests`);
 
-3. `Error Log`：記錄錯誤訊息
-   - 如果執行過程中發生錯誤，會記錄在這裡
+  } catch (error) {
+    const errorMessage = `Error fetching Taiwan news data: ${error.message}`;
+    Logger.log(errorMessage);
 
-## 注意事項
-
-1. 免費版 API 限制：
-   - 每次請求最多取得 10 篇新聞
-   - 每天最多 200 次請求
-
-2. 開發模式（DEV_MODE）：
-   - 設為 true 時只會發送 2 次請求（約 20 篇新聞）
-   - 設為 false 時會發送 10 次請求（約 100 篇新聞）
-   - 開發測試時建議使用 true，避免消耗 API 配額
-
-3. 重複執行：
-   - 程式會自動過濾重複的新聞
-   - 新的新聞會顯示在最上方
-   - 不會刪除舊的新聞資料
-
-## 常見問題
-
-Q: 執行時出現錯誤？
-A: 檢查 API 金鑰和試算表 ID 是否正確設定
-
-Q: 想要修改抓取的新聞數量？
-A: 調整 TARGET_REQUESTS 的數值（DEV_MODE 為 false 時有效）
-
-Q: 需要更頻繁地更新新聞？
-A: 可以設定觸發器（Trigger）定時執行，但要注意 API 使用限制
-
-## 進階使用場景
-
-以下是一些特殊使用場景的參數設定範例，您可以根據需求修改 apiUrl：
-
-1. 新聞品質控制
-   ```javascript
-   // 只取得優質新聞來源
-   &prioritydomain=top
-
-   // 排除特定新聞來源
-   &excludedomain=不可靠來源的網域
-   ```
-
-2. 內容過濾
-   ```javascript
-   // 只取得有圖片的新聞
-   &image=1
-
-   // 只取得有完整內容的新聞
-   &full_content=1
-   ```
-
-3. 時間控制
-   ```javascript
-   // 只取得最近 15 分鐘的新聞
-   &timeframe=15m
-
-   // 只取得最近 6 小時的新聞
-   &timeframe=6
-   ```
-
-4. 分類過濾
-   ```javascript
-   // 只取得特定分類的新聞
-   &category=business,technology
-
-   // 排除特定分類的新聞
-   &excludecategory=entertainment
-   ```
-
-5. 關鍵字搜尋
-   ```javascript
-   // 在標題中搜尋關鍵字
-   &qInTitle=台積電
-
-   // 在中繼資料中搜尋關鍵字
-   &qInMeta=台積電
-   ```
-
-### 應用範例
-
-1. 即時財經新聞監控
-   ```javascript
-   const apiUrl = `${BASE_API_URL}?apikey=${API_KEY}&country=tw&language=zh&timeframe=15m&category=business&prioritydomain=top`;
-   ```
-
-2. 科技產業追蹤
-   ```javascript
-   const apiUrl = `${BASE_API_URL}?apikey=${API_KEY}&country=tw&language=zh&qInTitle=(台積電 OR 聯電) AND (投資 OR 營收)&category=business`;
-   ```
-
-3. 圖片新聞整理
-   ```javascript
-   const apiUrl = `${BASE_API_URL}?apikey=${API_KEY}&country=tw&language=zh&image=1&category=entertainment,lifestyle`;
-   ```
-
-4. 重要新聞即時追蹤
-   ```javascript
-   const apiUrl = `${BASE_API_URL}?apikey=${API_KEY}&country=tw&language=zh&timeframe=15m&prioritydomain=top&full_content=1`;
-   ```
-
-### 使用注意事項
-
-1. 參數組合：
-   - 可以組合多個參數來精確過濾新聞
-   - 過多的參數可能會減少回傳的新聞數量
-
-2. API 限制：
-   - 某些參數組合可能會增加 API 的負載
-   - 建議先在開發模式下測試參數效果
-
-3. 效能考量：
-   - 使用 `full_content=1` 會增加回應時間
-   - 使用 `timeframe` 可以減少重複新聞
+    const errorSheet = SpreadsheetApp.openById(SPREADSHEET_ID).getSheetByName(ERROR_SHEET_NAME) || 
+                      SpreadsheetApp.openById(SPREADSHEET_ID).insertSheet(ERROR_SHEET_NAME);
+    errorSheet.appendRow([new Date(), 'fetchTaiwanNews', errorMessage]);
+  }
+}
